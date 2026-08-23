@@ -27,6 +27,37 @@ type LandlordMaintenanceRequest = {
   } | null;
 };
 
+type RawLandlordMaintenanceRequest = Omit<
+  LandlordMaintenanceRequest,
+  "tenant_profile" | "properties" | "tenancies"
+> & {
+  tenant_profile:
+    | {
+        full_name: string | null;
+        email: string | null;
+      }[]
+    | null;
+  properties:
+    | {
+        title: string;
+      }[]
+    | null;
+  tenancies:
+    | {
+        unit_label: string | null;
+      }[]
+    | null;
+};
+
+function normalizeRequestRow(raw: RawLandlordMaintenanceRequest): LandlordMaintenanceRequest {
+  return {
+    ...raw,
+    tenant_profile: raw.tenant_profile?.[0] ?? null,
+    properties: raw.properties?.[0] ?? null,
+    tenancies: raw.tenancies?.[0] ?? null,
+  };
+}
+
 type QueueFilter = "all" | "open" | "in_progress" | "resolved" | "closed";
 
 const STATUS_OPTIONS: Array<LandlordMaintenanceRequest["status"]> = [
@@ -67,7 +98,9 @@ export default function LandlordMaintenancePage() {
       return;
     }
 
-    const rows = (data as LandlordMaintenanceRequest[] | null) ?? [];
+    const rows = ((data as RawLandlordMaintenanceRequest[] | null) ?? []).map(
+      normalizeRequestRow
+    );
     setRequests(rows);
     setStatusById(
       rows.reduce<Record<string, LandlordMaintenanceRequest["status"]>>((acc, row) => {

@@ -135,7 +135,15 @@ export default function LandlordDashboardPage() {
 
   const openInvitations = invitations.length;
 
-  const urgentInvites = 0;
+  const urgentInvites = useMemo(() => {
+    const now = Date.now();
+    const cutoff = now + 48 * 60 * 60 * 1000;
+
+    return invitations.filter((invite) => {
+      const expiry = new Date(invite.expires_at).getTime();
+      return Number.isFinite(expiry) && expiry >= now && expiry <= cutoff;
+    }).length;
+  }, [invitations]);
 
   const actionItems = useMemo(() => {
     const items: string[] = [];

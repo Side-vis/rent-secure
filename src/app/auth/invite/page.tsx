@@ -1,13 +1,29 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
 
 type InviteState = "idle" | "ready" | "checking" | "accepted" | "error";
 
 export default function InviteAcceptPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-slate-950 px-6 py-16 text-slate-100">
+          <div className="mx-auto w-full max-w-xl rounded-3xl border border-slate-900 bg-slate-900/40 p-8">
+            <p className="text-sm text-slate-300">Loading invitation...</p>
+          </div>
+        </div>
+      }
+    >
+      <InviteAcceptContent />
+    </Suspense>
+  );
+}
+
+function InviteAcceptContent() {
   const searchParams = useSearchParams();
   const token = useMemo(() => searchParams.get("token") || "", [searchParams]);
 

@@ -30,6 +30,34 @@ type LandlordPayment = {
   } | null;
 };
 
+type RawLandlordPayment = Omit<LandlordPayment, "tenant_profile" | "properties" | "tenancies"> & {
+  tenant_profile:
+    | {
+        full_name: string | null;
+        email: string | null;
+      }[]
+    | null;
+  properties:
+    | {
+        title: string;
+      }[]
+    | null;
+  tenancies:
+    | {
+        unit_label: string | null;
+      }[]
+    | null;
+};
+
+function normalizePaymentRow(raw: RawLandlordPayment): LandlordPayment {
+  return {
+    ...raw,
+    tenant_profile: raw.tenant_profile?.[0] ?? null,
+    properties: raw.properties?.[0] ?? null,
+    tenancies: raw.tenancies?.[0] ?? null,
+  };
+}
+
 type PaymentFilter = "all" | "submitted" | "approved" | "rejected";
 
 export default function LandlordPaymentsPage() {
@@ -61,7 +89,7 @@ export default function LandlordPaymentsPage() {
       return;
     }
 
-    const rows = (data as LandlordPayment[] | null) ?? [];
+    const rows = ((data as RawLandlordPayment[] | null) ?? []).map(normalizePaymentRow);
     setPayments(rows);
     setNotesByPaymentId(
       rows.reduce<Record<string, string>>((acc, row) => {
