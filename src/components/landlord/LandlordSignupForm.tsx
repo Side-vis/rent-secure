@@ -1,26 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabase/client";
-
-const defaultAppUrl = "https://10antscore.com";
-
-function getSignupRedirectUrl() {
-  const configuredUrl = process.env.NEXT_PUBLIC_APP_URL;
-  const baseUrl = configuredUrl?.trim().length
-    ? configuredUrl.trim()
-    : defaultAppUrl;
-
-  return `${baseUrl.replace(/\/+$/, "")}/auth`;
-}
 
 export default function LandlordSignupForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const router = useRouter();
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -28,29 +14,30 @@ export default function LandlordSignupForm() {
     setStatus(null);
 
     try {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          emailRedirectTo: getSignupRedirectUrl(),
-          data: {
-            role: "landlord",
-          },
+      const response = await fetch("/api/auth/landlord-signup", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
+        body: JSON.stringify({
+          email,
+          password,
+        }),
       });
 
-      if (error) {
-        setStatus(error.message);
-        return;
-      }
+      const payload = (await response.json()) as {
+        error?: string;
+        message?: string;
+      };
 
-      if (data.session) {
-        router.replace("/dashboards/landlord/onboarding");
+      if (!response.ok) {
+        setStatus(payload.error || "Unable to create account right now.");
         return;
       }
 
       setStatus(
-        "Check your email to confirm the account, then sign in to continue onboarding."
+        payload.message ||
+          "Check your email to confirm the account, then sign in to continue onboarding."
       );
     } finally {
       setIsSubmitting(false);

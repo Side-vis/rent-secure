@@ -21,6 +21,8 @@ export default function AuthForm() {
   // const [role, setRole] = useState<Role>("tenant");
   const [status, setStatus] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSendingMagicLink, setIsSendingMagicLink] = useState(false);
+  const [isSendingReset, setIsSendingReset] = useState(false);
   const router = useRouter();
 
   // const actionLabel = useMemo(() => {
@@ -96,6 +98,78 @@ export default function AuthForm() {
       router.replace(getDashboardRoute(userRole));
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleMagicLink = async () => {
+    if (!email.trim()) {
+      setStatus("Enter your email to receive a sign-in link.");
+      return;
+    }
+
+    setIsSendingMagicLink(true);
+    setStatus(null);
+
+    try {
+      const response = await fetch("/api/auth/magic-link", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email,
+        }),
+      });
+
+      const payload = (await response.json()) as {
+        error?: string;
+        message?: string;
+      };
+
+      if (!response.ok) {
+        setStatus(payload.error || "Unable to send sign-in link right now.");
+        return;
+      }
+
+      setStatus(payload.message || "A secure sign-in link has been sent to your email.");
+    } finally {
+      setIsSendingMagicLink(false);
+    }
+  };
+
+  const handlePasswordReset = async () => {
+    if (!email.trim()) {
+      setStatus("Enter your email to receive a reset link.");
+      return;
+    }
+
+    setIsSendingReset(true);
+    setStatus(null);
+
+    try {
+      const response = await fetch("/api/auth/password-reset", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email,
+        }),
+      });
+
+      const payload = (await response.json()) as {
+        error?: string;
+        message?: string;
+      };
+
+      if (!response.ok) {
+        setStatus(payload.error || "Unable to send reset link right now.");
+        return;
+      }
+
+      setStatus(payload.message || "A password reset link has been sent to your email.");
+    } finally {
+      setIsSendingReset(false);
     }
   };
 
@@ -188,6 +262,26 @@ export default function AuthForm() {
           {/* {isSubmitting ? "Working..." : actionLabel} */}
           {isSubmitting ? "Working..." : "Sign in"}
         </button>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={handleMagicLink}
+            disabled={isSendingMagicLink}
+            className="rounded-2xl border border-slate-700 px-4 py-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-200 transition hover:border-slate-500 disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {isSendingMagicLink ? "Sending..." : "Email sign-in link"}
+          </button>
+
+          <button
+            type="button"
+            onClick={handlePasswordReset}
+            disabled={isSendingReset}
+            className="rounded-2xl border border-slate-700 px-4 py-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-200 transition hover:border-slate-500 disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {isSendingReset ? "Sending..." : "Forgot password"}
+          </button>
+        </div>
       </form>
     </div>
   );

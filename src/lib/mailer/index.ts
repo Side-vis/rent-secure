@@ -1,6 +1,9 @@
 import "server-only";
 import nodemailer from "nodemailer";
 import { buildTenantInviteTemplate } from "@/lib/mailer/templates/tenantInvite";
+import { buildLandlordSignupConfirmationTemplate } from "@/lib/mailer/templates/landlordSignupConfirmation";
+import { buildMagicLinkSignInTemplate } from "@/lib/mailer/templates/magicLinkSignIn";
+import { buildPasswordResetTemplate } from "@/lib/mailer/templates/passwordReset";
 
 type SendMailOptions = {
   to: string;
@@ -16,6 +19,21 @@ type SendTenantInviteOptions = {
   unitLabel?: string | null;
   expiresAtIso?: string;
   isResend?: boolean;
+};
+
+type SendLandlordSignupConfirmationOptions = {
+  to: string;
+  confirmLink: string;
+};
+
+type SendMagicLinkSignInOptions = {
+  to: string;
+  signInLink: string;
+};
+
+type SendPasswordResetOptions = {
+  to: string;
+  resetLink: string;
 };
 
 const smtpHost = process.env.SMTP_HOST;
@@ -71,6 +89,47 @@ export async function sendTenantInviteEmail(options: SendTenantInviteOptions) {
     unitLabel: options.unitLabel,
     expiresAtIso: options.expiresAtIso,
     isResend: options.isResend,
+  });
+
+  return sendMail({
+    to: options.to,
+    subject: template.subject,
+    html: template.html,
+    text: template.text,
+  });
+}
+
+export async function sendLandlordSignupConfirmationEmail(
+  options: SendLandlordSignupConfirmationOptions
+) {
+  const template = buildLandlordSignupConfirmationTemplate({
+    confirmLink: options.confirmLink,
+  });
+
+  return sendMail({
+    to: options.to,
+    subject: template.subject,
+    html: template.html,
+    text: template.text,
+  });
+}
+
+export async function sendMagicLinkSignInEmail(options: SendMagicLinkSignInOptions) {
+  const template = buildMagicLinkSignInTemplate({
+    signInLink: options.signInLink,
+  });
+
+  return sendMail({
+    to: options.to,
+    subject: template.subject,
+    html: template.html,
+    text: template.text,
+  });
+}
+
+export async function sendPasswordResetEmail(options: SendPasswordResetOptions) {
+  const template = buildPasswordResetTemplate({
+    resetLink: options.resetLink,
   });
 
   return sendMail({
