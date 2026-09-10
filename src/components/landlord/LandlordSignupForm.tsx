@@ -4,6 +4,17 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
 
+const defaultAppUrl = "https://10antscore.com";
+
+function getSignupRedirectUrl() {
+  const configuredUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const baseUrl = configuredUrl?.trim().length
+    ? configuredUrl.trim()
+    : defaultAppUrl;
+
+  return `${baseUrl.replace(/\/+$/, "")}/auth`;
+}
+
 export default function LandlordSignupForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -21,6 +32,7 @@ export default function LandlordSignupForm() {
         email,
         password,
         options: {
+          emailRedirectTo: getSignupRedirectUrl(),
           data: {
             role: "landlord",
           },

@@ -6,6 +6,7 @@ import { sendTenantInviteEmail } from "@/lib/mailer";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const defaultAppUrl = "https://10antscore.com";
 
 type InviteBody = {
   propertyId?: string;
@@ -32,6 +33,25 @@ type InviteEmailPayload = {
   expiresAtIso?: string;
   isResend?: boolean;
 };
+
+function normalizeBaseUrl(url: string) {
+  return url.replace(/\/+$/, "");
+}
+
+function resolveAppBaseUrl(request: NextRequest) {
+  const configuredUrl =
+    process.env.NEXT_PUBLIC_APP_URL || process.env.APP_BASE_URL || null;
+
+  if (configuredUrl && configuredUrl.trim().length > 0) {
+    return normalizeBaseUrl(configuredUrl.trim());
+  }
+
+  if (process.env.NODE_ENV === "development") {
+    return normalizeBaseUrl(request.nextUrl.origin);
+  }
+
+  return defaultAppUrl;
+}
 
 function createTokenPair() {
   const rawToken = crypto.randomBytes(24).toString("hex");
@@ -423,7 +443,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const redirectTo = `${request.nextUrl.origin}/auth/invite?token=${rawToken}`;
+    const redirectTo = `${resolveAppBaseUrl(request)}/auth/invite?token=${rawToken}`;
     const { error: authInviteError } = await dispatchInvitationEmail({
       tenantEmail,
       redirectTo,
@@ -671,7 +691,7 @@ export async function PATCH(request: NextRequest) {
       .eq("id", invitation.property_id)
       .maybeSingle();
 
-    const redirectTo = `${request.nextUrl.origin}/auth/invite?token=${rawToken}`;
+    const redirectTo = `${resolveAppBaseUrl(request)}/auth/invite?token=${rawToken}`;
     const { error: authInviteError } = await dispatchInvitationEmail({
       tenantEmail: invitation.tenant_email,
       redirectTo,

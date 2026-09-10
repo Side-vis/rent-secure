@@ -34,6 +34,15 @@ Required variables:
 Optional:
 
 - `EMAIL_PROVIDER_MODE` (`nodemailer` by default, `supabase` for fallback delivery)
+- `NEXT_PUBLIC_APP_URL` (canonical app URL used in auth/invite email redirects, for example `https://10antscore.com`)
+
+## Supabase Auth URL Settings
+
+For live email confirmations and invite links, update your Supabase project settings:
+
+1. Set Site URL to `https://10antscore.com`.
+2. Add your live redirect URLs to the redirect allow-list.
+3. Keep localhost redirects only in development projects.
 
 ## Routes
 
