@@ -41,7 +41,7 @@ export default function LandlordListingsPage() {
       const { data: list, error } = await supabase
         .from("properties")
         .select("id, title, address, status, created_at")
-        .eq("owner_id", user.id)
+        .or(`owner_id.eq.${user.id},landlord_id.eq.${user.id}`)
         .order("created_at", { ascending: false });
 
       if (!isActive) {
@@ -74,7 +74,7 @@ export default function LandlordListingsPage() {
     const { data: list, error } = await supabase
       .from("properties")
       .select("id, title, address, status, created_at")
-      .eq("owner_id", userId)
+      .or(`owner_id.eq.${userId},landlord_id.eq.${userId}`)
       .order("created_at", { ascending: false });
 
     if (!error) {

@@ -66,6 +66,11 @@ export default function ListingWizard({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [userId, setUserId] = useState<string>("");
+  // Status of the saved listing. Saving edits must not change it: a live listing
+  // stays live, and a draft/rejected one only changes when submitted for review.
+  const [savedStatus, setSavedStatus] = useState<string>("draft");
+  const [savedMessage, setSavedMessage] = useState<string | null>(null);
+  const isLive = savedStatus === "active" || savedStatus === "paused";
 
   // Load existing property if editing
   useEffect(() => {
@@ -79,7 +84,7 @@ export default function ListingWizard({
             .from("properties")
             .select("*")
             .eq("id", propertyId)
-            .eq("owner_id", data.user.id)
+            .or(`owner_id.eq.${data.user.id},landlord_id.eq.${data.user.id}`)
             .single();
 
           if (fetchError) {
@@ -88,6 +93,7 @@ export default function ListingWizard({
           }
 
           if (property) {
+            setSavedStatus(property.status || "draft");
             setDraft({
               id: property.id,
               title: property.title || "",
@@ -124,117 +130,99 @@ export default function ListingWizard({
     setDraft((prev) => ({ ...prev, ...updates }));
   };
 
-  const handleSaveDraft = async () => {
+  /** Persist the form. Never changes the listing's status. Returns the listing id. */
+  const saveListing = async (): Promise<string> => {
+    if (!draft.title.trim()) {
+      throw new Error("Property name is required");
+    }
+
+    const fields = {
+      title: draft.title,
+      description: draft.description,
+      property_type: draft.property_type,
+      bedrooms: draft.bedrooms,
+      bathrooms: draft.bathrooms,
+      furnished: draft.furnished,
+      parking: draft.parking,
+      pet_policy: draft.pet_policy,
+      country: draft.country,
+      city: draft.city,
+      area: draft.area,
+      address: draft.address,
+      latitude: draft.latitude,
+      longitude: draft.longitude,
+      monthly_rent: draft.monthly_rent,
+      currency: draft.currency,
+      security_deposit: draft.security_deposit,
+      lease_duration_months: draft.lease_duration_months,
+      available_from: draft.available_from,
+      max_occupancy: draft.max_occupancy,
+    };
+
+    if (draft.id) {
+      const { error: updateError } = await supabase
+        .from("properties")
+        .update(fields)
+        .eq("id", draft.id)
+        .or(`owner_id.eq.${userId},landlord_id.eq.${userId}`);
+
+      if (updateError) throw updateError;
+      return draft.id;
+    }
+
+    const { data: created, error: createError } = await supabase
+      .from("properties")
+      .insert({ ...fields, owner_id: userId, landlord_id: userId, status: "draft" })
+      .select("id")
+      .single();
+
+    if (createError) throw createError;
+    setDraft((prev) => ({ ...prev, id: created.id }));
+    setSavedStatus("draft");
+    return created.id;
+  };
+
+  const handleSave = async () => {
     setSaving(true);
     setError(null);
+    setSavedMessage(null);
 
     try {
-      if (!draft.title.trim()) {
-        setError("Property name is required");
-        setSaving(false);
-        return;
-      }
-
-      if (draft.id) {
-        // Update existing
-        const { error: updateError } = await supabase
-          .from("properties")
-          .update({
-            title: draft.title,
-            description: draft.description,
-            property_type: draft.property_type,
-            bedrooms: draft.bedrooms,
-            bathrooms: draft.bathrooms,
-            furnished: draft.furnished,
-            parking: draft.parking,
-            pet_policy: draft.pet_policy,
-            country: draft.country,
-            city: draft.city,
-            area: draft.area,
-            address: draft.address,
-            latitude: draft.latitude,
-            longitude: draft.longitude,
-            monthly_rent: draft.monthly_rent,
-            currency: draft.currency,
-            security_deposit: draft.security_deposit,
-            lease_duration_months: draft.lease_duration_months,
-            available_from: draft.available_from,
-            max_occupancy: draft.max_occupancy,
-            status: "draft",
-          })
-          .eq("id", draft.id)
-          .eq("owner_id", userId);
-
-        if (updateError) throw updateError;
-      } else {
-        // Create new
-        const { data: created, error: createError } = await supabase
-          .from("properties")
-          .insert({
-            owner_id: userId,
-            landlord_id: userId,
-            title: draft.title,
-            description: draft.description,
-            property_type: draft.property_type,
-            bedrooms: draft.bedrooms,
-            bathrooms: draft.bathrooms,
-            furnished: draft.furnished,
-            parking: draft.parking,
-            pet_policy: draft.pet_policy,
-            country: draft.country,
-            city: draft.city,
-            area: draft.area,
-            address: draft.address,
-            latitude: draft.latitude,
-            longitude: draft.longitude,
-            monthly_rent: draft.monthly_rent,
-            currency: draft.currency,
-            security_deposit: draft.security_deposit,
-            lease_duration_months: draft.lease_duration_months,
-            available_from: draft.available_from,
-            max_occupancy: draft.max_occupancy,
-            status: "draft",
-          })
-          .select("id")
-          .single();
-
-        if (createError) throw createError;
-        if (created) {
-          setDraft((prev) => ({ ...prev, id: created.id }));
-        }
-      }
-
-      setSaving(false);
+      await saveListing();
+      setSavedMessage(isLive ? "Changes saved. Your listing is still live." : "Draft saved.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save");
+    } finally {
       setSaving(false);
     }
   };
 
-  const handleSubmitForVerification = async () => {
-    if (!draft.id) {
-      setError("Please save draft first");
-      return;
-    }
-
+  /** Final step: live listings just save; everything else saves and goes to review. */
+  const handleFinish = async () => {
     setSaving(true);
     setError(null);
+    setSavedMessage(null);
 
     try {
-      const { error: updateError } = await supabase
-        .from("properties")
-        // Resubmitting after a rejection clears the previous reason.
-        .update({ status: "pending_verification", rejection_reason: null })
-        .eq("id", draft.id)
-        .eq("owner_id", userId);
+      // Save first so edits made since the last "Save" are not lost.
+      const id = await saveListing();
 
-      if (updateError) throw updateError;
+      if (!isLive) {
+        const { error: updateError } = await supabase
+          .from("properties")
+          // Resubmitting after a rejection clears the previous reason.
+          .update({ status: "pending_verification", rejection_reason: null })
+          .eq("id", id)
+          .or(`owner_id.eq.${userId},landlord_id.eq.${userId}`);
 
-      if (onComplete) {
-        onComplete(draft.id);
+        if (updateError) throw updateError;
+        setSavedStatus("pending_verification");
       }
+
+      onComplete?.(id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to submit");
+    } finally {
       setSaving(false);
     }
   };
@@ -637,8 +625,9 @@ export default function ListingWizard({
             </div>
 
             <p className="text-sm text-slate-300">
-              Once submitted, your listing will be reviewed by our team before going
-              live. You'll be notified when it's approved.
+              {isLive
+                ? "This listing is live. Saved changes are visible to tenants straight away."
+                : "Once submitted, your listing will be reviewed by our team before going live. You will be notified when it is approved."}
             </p>
           </div>
         )}
@@ -671,23 +660,37 @@ export default function ListingWizard({
           ) : (
             <button
               type="button"
-              onClick={handleSubmitForVerification}
-              disabled={saving || !draft.id}
+              onClick={handleFinish}
+              disabled={saving}
               className="flex-1 rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-70"
             >
-              {saving ? "Submitting..." : "Submit for Verification"}
+              {saving
+                ? isLive
+                  ? "Saving..."
+                  : "Submitting..."
+                : isLive
+                  ? "Save changes"
+                  : savedStatus === "rejected"
+                    ? "Resubmit for Verification"
+                    : "Submit for Verification"}
             </button>
           )}
 
           <button
             type="button"
-            onClick={handleSaveDraft}
+            onClick={handleSave}
             disabled={saving}
-            className="rounded-2xl border border-slate-700 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:bg-slate-900/40"
+            className="rounded-2xl border border-slate-700 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:bg-slate-900/40 disabled:cursor-not-allowed disabled:opacity-70"
           >
-            {saving ? "Saving..." : "Save Draft"}
+            {saving ? "Saving..." : isLive ? "Save" : "Save Draft"}
           </button>
         </div>
+
+        {savedMessage ? (
+          <p role="status" className="mt-3 text-center text-xs text-emerald-300">
+            {savedMessage}
+          </p>
+        ) : null}
       </div>
     </FadeIn>
   );

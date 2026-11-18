@@ -1,39 +1,169 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
-import DashboardSection from "@/components/dashboards/DashboardSection";
+import { formatCurrencyTotals, sumByCurrency } from "@/lib/money";
 
 type PropertyRow = {
   id: string;
   title: string;
   status: string;
   monthly_rent: number | null;
-  max_occupancy: number | null;
+  currency: string | null;
+  rejection_reason: string | null;
 };
 
-type TenancyRow = {
+type Tone = "urgent" | "warning" | "info";
+
+type AttentionItem = {
   id: string;
-  status: string;
+  tone: Tone;
+  title: string;
+  detail?: string;
+  href: string;
+  cta: string;
 };
 
-type InvitationRow = {
-  id: string;
-  status: string;
-  expires_at: string;
+type DashboardData = {
+  verificationStatus: string;
+  rejectionReason: string | null;
+  properties: PropertyRow[];
+  occupiedUnits: number;
+  totalUnits: number;
+  activeTenancies: number;
+  pendingInvites: number;
+  expiringInvites: number;
+  paymentsToReview: number;
+  openMaintenance: number;
+  urgentMaintenance: number;
+  listingsWithoutUnits: PropertyRow[];
 };
+
+const INVITE_EXPIRY_WARNING_MS = 48 * 60 * 60 * 1000;
+
+const TONE_STYLES: Record<Tone, string> = {
+  urgent: "border-rose-500/40 bg-rose-500/10",
+  warning: "border-amber-500/40 bg-amber-500/10",
+  info: "border-slate-800 bg-slate-950/40",
+};
+
+const TONE_DOT: Record<Tone, string> = {
+  urgent: "bg-rose-400",
+  warning: "bg-amber-400",
+  info: "bg-slate-500",
+};
+
+function plural(count: number, one: string, many = `${one}s`) {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+function buildAttentionItems(data: DashboardData): AttentionItem[] {
+  const items: AttentionItem[] = [];
+
+  if (data.paymentsToReview > 0) {
+    items.push({
+      id: "payments",
+      tone: "urgent",
+      title: `${plural(data.paymentsToReview, "rent payment")} waiting for your approval`,
+      detail: "Tenants are waiting for confirmation that their payment was received.",
+      href: "/dashboards/landlord/payments",
+      cta: "Review payments",
+    });
+  }
+
+  if (data.urgentMaintenance > 0) {
+    items.push({
+      id: "maintenance-urgent",
+      tone: "urgent",
+      title: `${plural(data.urgentMaintenance, "high-priority maintenance request")} open`,
+      href: "/dashboards/landlord/maintenance",
+      cta: "Open maintenance",
+    });
+  } else if (data.openMaintenance > 0) {
+    items.push({
+      id: "maintenance",
+      tone: "warning",
+      title: `${plural(data.openMaintenance, "maintenance request")} open`,
+      href: "/dashboards/landlord/maintenance",
+      cta: "Open maintenance",
+    });
+  }
+
+  for (const property of data.properties.filter((p) => p.status === "rejected")) {
+    items.push({
+      id: `rejected-${property.id}`,
+      tone: "urgent",
+      title: `“${property.title}” needs changes before it can go live`,
+      detail: property.rejection_reason ?? undefined,
+      href: `/dashboards/landlord/listings/${property.id}`,
+      cta: "Fix listing",
+    });
+  }
+
+  if (data.expiringInvites > 0) {
+    items.push({
+      id: "invites-expiring",
+      tone: "warning",
+      title: `${plural(data.expiringInvites, "tenant invitation")} expire within 48 hours`,
+      detail: "Resend them so tenants don't lose access.",
+      href: "/dashboards/landlord/tenants",
+      cta: "Manage invites",
+    });
+  }
+
+  const drafts = data.properties.filter((p) => p.status === "draft");
+  if (drafts.length > 0) {
+    items.push({
+      id: "drafts",
+      tone: "warning",
+      title: `${plural(drafts.length, "draft listing")} not yet submitted for review`,
+      href: drafts.length === 1 ? `/dashboards/landlord/listings/${drafts[0].id}` : "/dashboards/landlord/listings",
+      cta: drafts.length === 1 ? "Finish listing" : "View drafts",
+    });
+  }
+
+  for (const property of data.listingsWithoutUnits) {
+    items.push({
+      id: `units-${property.id}`,
+      tone: "info",
+      title: `Add rooms or units to “${property.title}”`,
+      detail: "Units let you invite tenants to a specific room and track occupancy.",
+      href: `/dashboards/landlord/listings/${property.id}`,
+      cta: "Add units",
+    });
+  }
+
+  if (data.pendingInvites > 0 && data.expiringInvites === 0) {
+    items.push({
+      id: "invites",
+      tone: "info",
+      title: `${plural(data.pendingInvites, "tenant invitation")} waiting to be accepted`,
+      href: "/dashboards/landlord/tenants",
+      cta: "View invites",
+    });
+  }
+
+  if (data.verificationStatus === "pending") {
+    items.push({
+      id: "verification-pending",
+      tone: "info",
+      title: "Your verification is being reviewed",
+      detail: "Listings can be approved once your account is verified.",
+      href: "/dashboards/landlord/onboarding",
+      cta: "View submission",
+    });
+  }
+
+  return items;
+}
 
 export default function LandlordDashboardPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
-  const [isVerified, setIsVerified] = useState(false);
-  const [verificationStatus, setVerificationStatus] = useState<string | null>(null);
-  const [rejectionReason, setRejectionReason] = useState<string | null>(null);
-  const [properties, setProperties] = useState<PropertyRow[]>([]);
-  const [tenancies, setTenancies] = useState<TenancyRow[]>([]);
-  const [invitations, setInvitations] = useState<InvitationRow[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [data, setData] = useState<DashboardData | null>(null);
 
   useEffect(() => {
     let isActive = true;
@@ -43,22 +173,25 @@ export default function LandlordDashboardPage() {
         data: { user },
       } = await supabase.auth.getUser();
 
-      if (!isActive) {
-        return;
-      }
+      if (!isActive) return;
 
       if (!user) {
         router.replace("/auth");
         return;
       }
 
-      const { data: landlordProfile } = await supabase
+      const { data: landlordProfile, error: profileError } = await supabase
         .from("landlord_profiles")
         .select("onboarding_step, verification_status, rejection_reason")
         .eq("user_id", user.id)
         .maybeSingle();
 
-      if (!isActive) {
+      if (!isActive) return;
+
+      if (profileError) {
+        console.error("Failed to load landlord profile:", profileError);
+        setLoadError("Could not load your dashboard. Please refresh the page.");
+        setLoading(false);
         return;
       }
 
@@ -67,36 +200,88 @@ export default function LandlordDashboardPage() {
         return;
       }
 
-      setIsVerified(landlordProfile.verification_status === "approved");
-      setVerificationStatus(landlordProfile.verification_status ?? null);
-      setRejectionReason(landlordProfile.rejection_reason ?? null);
+      const count = { count: "exact" as const, head: true };
+      const [propertiesRes, tenanciesRes, invitationsRes, paymentsRes, maintenanceRes] = await Promise.all([
+        supabase
+          .from("properties")
+          .select("id, title, status, monthly_rent, currency, rejection_reason")
+          .or(`owner_id.eq.${user.id},landlord_id.eq.${user.id}`)
+          .order("created_at", { ascending: false }),
+        supabase.from("tenancies").select("id, property_id").eq("landlord_id", user.id).eq("status", "active"),
+        supabase.from("tenant_invitations").select("id, expires_at").eq("landlord_id", user.id).eq("status", "pending"),
+        supabase.from("rent_payments").select("id", count).eq("landlord_id", user.id).eq("status", "submitted"),
+        supabase
+          .from("maintenance_requests")
+          .select("id, priority")
+          .eq("landlord_id", user.id)
+          .in("status", ["open", "in_progress"]),
+      ]);
 
-      const [propertiesResult, tenanciesResult, invitationsResult] =
-        await Promise.all([
-          supabase
-            .from("properties")
-            .select("id, title, status, monthly_rent, max_occupancy")
-            .or(`owner_id.eq.${user.id},landlord_id.eq.${user.id}`)
-            .order("created_at", { ascending: false }),
-          supabase
-            .from("tenancies")
-            .select("id, status")
-            .eq("landlord_id", user.id)
-            .eq("status", "active"),
-          supabase
-            .from("tenant_invitations")
-            .select("id, status, expires_at")
-            .eq("landlord_id", user.id)
-            .eq("status", "pending"),
-        ]);
+      if (!isActive) return;
 
-      if (!isActive) {
-        return;
+      const failed = [propertiesRes, tenanciesRes, invitationsRes, paymentsRes, maintenanceRes].find((r) => r.error);
+      if (failed?.error) {
+        console.error("Failed to load landlord dashboard:", failed.error);
+        setLoadError("Some of your dashboard could not be loaded. Figures may be incomplete.");
       }
 
-      setProperties((propertiesResult.data as PropertyRow[]) ?? []);
-      setTenancies((tenanciesResult.data as TenancyRow[]) ?? []);
-      setInvitations((invitationsResult.data as InvitationRow[]) ?? []);
+      const properties = (propertiesRes.data as PropertyRow[] | null) ?? [];
+      const tenancies = (tenanciesRes.data as Array<{ id: string; property_id: string }> | null) ?? [];
+
+      // Units per property; a listing without units counts as a single rentable unit.
+      const unitCounts = new Map<string, number>();
+      if (properties.length > 0) {
+        const { data: units } = await supabase
+          .from("property_units")
+          .select("property_id")
+          .in(
+            "property_id",
+            properties.map((p) => p.id)
+          );
+        for (const unit of units ?? []) {
+          unitCounts.set(unit.property_id, (unitCounts.get(unit.property_id) ?? 0) + 1);
+        }
+      }
+
+      if (!isActive) return;
+
+      const tenanciesByProperty = new Map<string, number>();
+      for (const tenancy of tenancies) {
+        tenanciesByProperty.set(tenancy.property_id, (tenanciesByProperty.get(tenancy.property_id) ?? 0) + 1);
+      }
+
+      const activeProperties = properties.filter((p) => p.status === "active");
+      let totalUnits = 0;
+      let occupiedUnits = 0;
+      for (const property of activeProperties) {
+        const units = Math.max(unitCounts.get(property.id) ?? 0, 1);
+        totalUnits += units;
+        occupiedUnits += Math.min(tenanciesByProperty.get(property.id) ?? 0, units);
+      }
+
+      const now = Date.now();
+      const invitations = (invitationsRes.data as Array<{ id: string; expires_at: string }> | null) ?? [];
+      const expiringInvites = invitations.filter((invite) => {
+        const expiry = new Date(invite.expires_at).getTime();
+        return Number.isFinite(expiry) && expiry >= now && expiry <= now + INVITE_EXPIRY_WARNING_MS;
+      }).length;
+
+      const maintenance = (maintenanceRes.data as Array<{ id: string; priority: string }> | null) ?? [];
+
+      setData({
+        verificationStatus: landlordProfile.verification_status ?? "not_started",
+        rejectionReason: landlordProfile.rejection_reason ?? null,
+        properties,
+        occupiedUnits,
+        totalUnits,
+        activeTenancies: tenancies.length,
+        pendingInvites: invitations.length,
+        expiringInvites,
+        paymentsToReview: paymentsRes.count ?? 0,
+        openMaintenance: maintenance.length,
+        urgentMaintenance: maintenance.filter((m) => m.priority === "urgent" || m.priority === "high").length,
+        listingsWithoutUnits: activeProperties.filter((p) => !unitCounts.has(p.id)),
+      });
       setLoading(false);
     };
 
@@ -107,183 +292,6 @@ export default function LandlordDashboardPage() {
     };
   }, [router]);
 
-  const activeListings = useMemo(
-    () => properties.filter((property) => property.status === "active").length,
-    [properties]
-  );
-
-  const draftListings = useMemo(
-    () => properties.filter((property) => property.status === "draft").length,
-    [properties]
-  );
-
-  const totalRentPotential = useMemo(
-    () =>
-      properties
-        .filter((property) => property.status === "active")
-        .reduce((sum, property) => sum + (property.monthly_rent ?? 0), 0),
-    [properties]
-  );
-
-  const totalCapacity = useMemo(
-    () => properties.reduce((sum, property) => sum + (property.max_occupancy ?? 0), 0),
-    [properties]
-  );
-
-  const occupancyRate = useMemo(() => {
-    if (totalCapacity === 0) {
-      return 0;
-    }
-    return Math.min(100, Math.round((tenancies.length / totalCapacity) * 100));
-  }, [tenancies.length, totalCapacity]);
-
-  const openInvitations = invitations.length;
-
-  const urgentInvites = useMemo(() => {
-    const now = Date.now();
-    const cutoff = now + 48 * 60 * 60 * 1000;
-
-    return invitations.filter((invite) => {
-      const expiry = new Date(invite.expires_at).getTime();
-      return Number.isFinite(expiry) && expiry >= now && expiry <= cutoff;
-    }).length;
-  }, [invitations]);
-
-  const actionItems = useMemo(() => {
-    const items: string[] = [];
-    if (!isVerified) {
-      items.push("Complete verification to improve tenant trust and listing visibility.");
-    }
-    if (draftListings > 0) {
-      items.push(
-        `You have ${draftListings} draft listing${draftListings === 1 ? "" : "s"}; complete details and submit for review.`
-      );
-    }
-    if (openInvitations > 0) {
-      items.push(
-        `${openInvitations} tenant invitation${openInvitations === 1 ? "" : "s"} waiting for acceptance.`
-      );
-    }
-    if (urgentInvites > 0) {
-      items.push(
-        `${urgentInvites} invitation${urgentInvites === 1 ? "" : "s"} expire within 48 hours.`
-      );
-    }
-    if (items.length === 0) {
-      items.push("No urgent actions right now. Keep your listings updated with room-level details.");
-    }
-    return items;
-  }, [draftListings, isVerified, openInvitations, urgentInvites]);
-
-  const listingWorkflowItems = useMemo(() => {
-    const items: string[] = [];
-
-    if (properties.length === 0) {
-      items.push("Create your first listing to start attracting tenant demand.");
-      items.push("Add accurate address, rent, and occupancy details before publishing.");
-      items.push("Upload room or unit inventory so invitations can target specific units.");
-      items.push("Submit your first listing for review once all required fields are complete.");
-      return items;
-    }
-
-    if (draftListings > 0) {
-      items.push(
-        `Complete ${draftListings} draft listing${draftListings === 1 ? "" : "s"} and submit for verification.`
-      );
-    } else {
-      items.push("All listings are currently out of draft. Keep media and rent details up to date.");
-    }
-
-    items.push(
-      activeListings > 0
-        ? `You have ${activeListings} active listing${activeListings === 1 ? "" : "s"}; review pricing weekly for competitiveness.`
-        : "No active listings yet; publish at least one listing to begin tenant onboarding."
-    );
-    items.push(
-      `Portfolio visibility: ${properties.length} listing${properties.length === 1 ? "" : "s"} currently tracked.`
-    );
-    items.push(
-      isVerified
-        ? "Verification approved. Listings receive stronger trust signals in tenant-facing flows."
-        : "Verification pending. Complete verification to improve listing credibility and conversion."
-    );
-
-    return items.slice(0, 4);
-  }, [activeListings, draftListings, isVerified, properties.length]);
-
-  const tenantPipelineItems = useMemo(() => {
-    const items: string[] = [];
-
-    items.push(
-      openInvitations > 0
-        ? `${openInvitations} invitation${openInvitations === 1 ? "" : "s"} awaiting acceptance; follow up with tenants today.`
-        : "No pending invitations right now; send invites from Tenant Management as new units open."
-    );
-    items.push(
-      urgentInvites > 0
-        ? `${urgentInvites} invitation${urgentInvites === 1 ? "" : "s"} expire within 48 hours; resend or force re-link to avoid drop-off.`
-        : "No invitations expiring in the next 48 hours."
-    );
-    items.push(
-      tenancies.length > 0
-        ? `${tenancies.length} active tenanc${tenancies.length === 1 ? "y" : "ies"}; keep status current for accurate occupancy reporting.`
-        : "No active tenancies yet; prioritize converting pending invitations."
-    );
-    items.push(
-      occupancyRate >= 85
-        ? `Occupancy is ${occupancyRate}%; prioritize retention and renewal outreach.`
-        : `Occupancy is ${occupancyRate}%; focus on filling available units to improve recurring income.`
-    );
-
-    return items;
-  }, [occupancyRate, openInvitations, tenancies.length, urgentInvites]);
-
-  const portfolioHealthItems = useMemo(() => {
-    const items: string[] = [];
-
-    items.push(
-      totalRentPotential > 0
-        ? `Current active rent potential is $${totalRentPotential.toLocaleString()} per month.`
-        : "Rent potential is $0; publish active listings to begin generating monthly rent."
-    );
-    items.push(
-      totalCapacity > 0
-        ? `Configured capacity is ${totalCapacity} total occupant slot${totalCapacity === 1 ? "" : "s"}.`
-        : "Capacity is not configured yet; add occupancy details on each listing."
-    );
-    items.push(
-      properties.length > 0
-        ? `Average active rent per listing: $${Math.round(totalRentPotential / Math.max(activeListings, 1)).toLocaleString()}.`
-        : "No listing-level rent averages available until at least one listing is created."
-    );
-    items.push("Review listing-level performance weekly to catch pricing and vacancy trends early.");
-
-    return items;
-  }, [activeListings, properties.length, totalCapacity, totalRentPotential]);
-
-  const complianceReadinessItems = useMemo(() => {
-    const items: string[] = [];
-
-    items.push(
-      isVerified
-        ? "Identity verification is complete; continue maintaining compliant listing data."
-        : "Complete verification and profile checks to unlock stronger tenant trust signals."
-    );
-    items.push(
-      draftListings > 0
-        ? `Resolve ${draftListings} draft listing${draftListings === 1 ? "" : "s"} with missing details before publishing.`
-        : "No draft backlog detected; keep required fields complete on any new listing."
-    );
-    items.push(
-      openInvitations > 0
-        ? "Monitor invitation status changes daily to prevent tenant onboarding delays."
-        : "Invitation queue is clear; keep tenant communication templates ready for new openings."
-    );
-    items.push("Keep tenancy status and unit assignments current to support accurate audit trails.");
-
-    return items;
-  }, [draftListings, isVerified, openInvitations]);
-
   if (loading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center text-sm text-slate-300">
@@ -292,74 +300,94 @@ export default function LandlordDashboardPage() {
     );
   }
 
+  if (!data) {
+    return (
+      <div className="rounded-3xl border border-rose-900/60 bg-rose-950/30 p-8 text-center text-sm text-rose-200">
+        {loadError ?? "Could not load your dashboard."}
+      </div>
+    );
+  }
+
+  const isVerified = data.verificationStatus === "approved";
+  const isRejected = data.verificationStatus === "rejected";
+  const activeListings = data.properties.filter((p) => p.status === "active");
+  const rentTotals = sumByCurrency(activeListings.map((p) => ({ amount: p.monthly_rent, currency: p.currency })));
+  const occupancyRate = data.totalUnits > 0 ? Math.round((data.occupiedUnits / data.totalUnits) * 100) : 0;
+  const attention = buildAttentionItems(data);
+
+  const stats = [
+    {
+      label: "Payments to review",
+      value: String(data.paymentsToReview),
+      hint: data.paymentsToReview > 0 ? "Waiting for your approval" : "All caught up",
+      href: "/dashboards/landlord/payments",
+      highlight: data.paymentsToReview > 0,
+    },
+    {
+      label: "Open maintenance",
+      value: String(data.openMaintenance),
+      hint: data.urgentMaintenance > 0 ? `${data.urgentMaintenance} high priority` : "Open or in progress",
+      href: "/dashboards/landlord/maintenance",
+      highlight: data.urgentMaintenance > 0,
+    },
+    {
+      label: "Occupancy",
+      value: data.totalUnits > 0 ? `${occupancyRate}%` : "—",
+      hint:
+        data.totalUnits > 0
+          ? `${data.occupiedUnits} of ${plural(data.totalUnits, "unit")} occupied`
+          : "No live listings yet",
+      href: "/dashboards/landlord/tenants",
+      highlight: false,
+    },
+    {
+      label: "Monthly rent (live listings)",
+      value: formatCurrencyTotals(rentTotals),
+      hint: `${plural(activeListings.length, "live listing")} of ${data.properties.length}`,
+      href: "/dashboards/landlord/listings",
+      highlight: false,
+    },
+  ];
+
   return (
     <div className="grid gap-8">
       <section className="rounded-3xl border border-slate-900 bg-linear-to-br from-slate-900/70 via-slate-950/70 to-slate-900/30 p-8">
         <div className="flex flex-wrap items-center justify-between gap-6">
           <div>
-            <p className="text-xs uppercase tracking-[0.4em] text-slate-400">
-              Portfolio
-            </p>
-            <h2 className="mt-3 text-3xl font-semibold text-white">
-              Landlord Dashboard
-            </h2>
+            <p className="text-xs uppercase tracking-[0.4em] text-slate-400">Portfolio</p>
+            <h2 className="mt-3 text-3xl font-semibold text-white">Landlord Dashboard</h2>
             <p className="mt-3 max-w-xl text-sm text-slate-300">
-              Manage listings, tenants, and finances with clear, actionable
-              signals.
+              What needs your attention across listings, tenants and payments.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <Link
-              href="/dashboards/landlord/listings"
-              className="rounded-2xl border border-slate-700 bg-slate-950/60 px-5 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-slate-200 transition hover:border-slate-500 hover:text-white"
-            >
-              Add listing
-            </Link>
-            <Link
-              href="/dashboards/landlord/tenants"
-              className="rounded-2xl border border-slate-700 bg-slate-950/60 px-5 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-slate-200 transition hover:border-slate-500 hover:text-white"
-            >
-              Manage tenants
-            </Link>
-            <Link
-              href="/dashboards/landlord/payments"
-              className="rounded-2xl border border-slate-700 bg-slate-950/60 px-5 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-slate-200 transition hover:border-slate-500 hover:text-white"
-            >
-              Review payments
-            </Link>
-            <Link
-              href="/dashboards/landlord/maintenance"
-              className="rounded-2xl border border-slate-700 bg-slate-950/60 px-5 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-slate-200 transition hover:border-slate-500 hover:text-white"
-            >
-              Maintenance queue
-            </Link>
             <div
               className={`rounded-2xl border px-5 py-3 text-xs font-semibold uppercase tracking-[0.3em] ${
                 isVerified
                   ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
-                  : verificationStatus === "rejected"
+                  : isRejected
                     ? "border-rose-500/40 bg-rose-500/10 text-rose-100"
                     : "border-amber-500/40 bg-amber-500/10 text-amber-100"
               }`}
             >
-              {isVerified
-                ? "Verified"
-                : verificationStatus === "rejected"
-                  ? "Changes requested"
-                  : "Verification pending"}
+              {isVerified ? "Verified" : isRejected ? "Changes requested" : "Verification pending"}
             </div>
+            <Link
+              href="/dashboards/landlord/listings"
+              className="rounded-2xl bg-slate-100 px-5 py-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-950 transition hover:bg-white"
+            >
+              + Add listing
+            </Link>
           </div>
         </div>
       </section>
 
-      {verificationStatus === "rejected" ? (
+      {isRejected ? (
         <section className="flex flex-wrap items-start justify-between gap-4 rounded-3xl border border-rose-500/40 bg-rose-500/10 p-6">
           <div className="max-w-2xl">
-            <h3 className="text-base font-semibold text-rose-100">
-              Your verification was not approved
-            </h3>
-            {rejectionReason ? (
-              <p className="mt-2 whitespace-pre-line text-sm text-rose-100/90">{rejectionReason}</p>
+            <h3 className="text-base font-semibold text-rose-100">Your verification was not approved</h3>
+            {data.rejectionReason ? (
+              <p className="mt-2 whitespace-pre-line text-sm text-rose-100/90">{data.rejectionReason}</p>
             ) : null}
             <p className="mt-2 text-xs text-rose-200/80">
               Fix the issue in your onboarding details and resubmit for review.
@@ -374,88 +402,88 @@ export default function LandlordDashboardPage() {
         </section>
       ) : null}
 
+      {loadError ? (
+        <div className="rounded-2xl border border-rose-900/60 bg-rose-950/30 px-4 py-3 text-sm text-rose-200">
+          {loadError}
+        </div>
+      ) : null}
+
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {[
-          {
-            label: "Active listings",
-            value: String(activeListings),
-            trend: `${properties.length} total`,
-          },
-          {
-            label: "Occupancy rate",
-            value: `${occupancyRate}%`,
-            trend: `${tenancies.length} active tenants`,
-          },
-          {
-            label: "Pending invites",
-            value: String(openInvitations),
-            trend: urgentInvites > 0 ? `${urgentInvites} expiring soon` : "Stable",
-          },
-          {
-            label: "Rent potential",
-            value: `$${totalRentPotential.toLocaleString()}`,
-            trend: "Monthly active listings",
-          },
-        ].map((item) => (
-          <div
+        {stats.map((item) => (
+          <Link
             key={item.label}
-            className="rounded-3xl border border-slate-900 bg-slate-900/40 p-5"
+            href={item.href}
+            className={`rounded-3xl border p-5 transition hover:border-slate-600 ${
+              item.highlight ? "border-amber-500/40 bg-amber-500/5" : "border-slate-900 bg-slate-900/40"
+            }`}
           >
-            <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
-              {item.label}
-            </p>
-            <div className="mt-3 text-3xl font-semibold text-white">
-              {item.value}
-            </div>
-            <p className="mt-2 text-xs text-slate-500">{item.trend}</p>
-          </div>
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-400">{item.label}</p>
+            <div className="mt-3 break-words text-2xl font-semibold text-white md:text-3xl">{item.value}</div>
+            <p className="mt-2 text-xs text-slate-500">{item.hint}</p>
+          </Link>
         ))}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
-        <div className="rounded-3xl border border-slate-900 bg-slate-900/40 p-6">
-          <h3 className="text-lg font-semibold text-white">Next Actions</h3>
-          <p className="mt-2 text-sm text-slate-300">
-            Live recommendations based on your listing and tenant activity.
-          </p>
-          <ul className="mt-5 grid gap-3 text-sm text-slate-200">
-            {actionItems.map((item) => (
-              <li
-                key={item}
-                className="rounded-2xl border border-slate-800 bg-slate-950/40 px-4 py-3"
-              >
-                {item}
+      {data.properties.length === 0 ? (
+        <section className="rounded-3xl border border-slate-900 bg-slate-900/40 p-6">
+          <h3 className="text-lg font-semibold text-white">Get your first tenant in</h3>
+          <ol className="mt-5 grid gap-3 text-sm">
+            {[
+              { done: isVerified, label: "Get verified", href: "/dashboards/landlord/onboarding" },
+              { done: false, label: "Create a listing and submit it for review", href: "/dashboards/landlord/listings" },
+              { done: false, label: "Add rooms or units to the listing", href: "/dashboards/landlord/listings" },
+              { done: false, label: "Invite a tenant to a unit", href: "/dashboards/landlord/tenants" },
+            ].map((step, index) => (
+              <li key={step.label}>
+                <Link
+                  href={step.href}
+                  className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-950/40 px-4 py-3 transition hover:border-slate-600"
+                >
+                  <span
+                    className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                      step.done ? "bg-emerald-500 text-slate-950" : "border border-slate-600 text-slate-300"
+                    }`}
+                  >
+                    {step.done ? "✓" : index + 1}
+                  </span>
+                  <span className={step.done ? "text-slate-400 line-through" : "text-slate-100"}>{step.label}</span>
+                </Link>
               </li>
             ))}
-          </ul>
-        </div>
-
-        <div className="grid gap-6">
-          <DashboardSection
-            title="Listings + Verification"
-            description="Prioritized listing actions based on current portfolio status."
-            items={listingWorkflowItems}
-          />
-          <DashboardSection
-            title="Tenant Pipeline"
-            description="Invitation and tenancy signals that need attention now."
-            items={tenantPipelineItems}
-          />
-        </div>
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <DashboardSection
-          title="Portfolio Health"
-          description="Capacity and rent potential indicators for planning decisions."
-          items={portfolioHealthItems}
-        />
-        <DashboardSection
-          title="Compliance Readiness"
-          description="Data hygiene checkpoints to keep listing and tenancy records reliable."
-          items={complianceReadinessItems}
-        />
-      </div>
+          </ol>
+        </section>
+      ) : (
+        <section className="rounded-3xl border border-slate-900 bg-slate-900/40 p-6">
+          <h3 className="text-lg font-semibold text-white">Needs your attention</h3>
+          {attention.length === 0 ? (
+            <p className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/40 px-4 py-6 text-center text-sm text-slate-400">
+              You&apos;re all caught up. Nothing needs your attention right now.
+            </p>
+          ) : (
+            <ul className="mt-5 grid gap-3">
+              {attention.map((item) => (
+                <li key={item.id}>
+                  <Link
+                    href={item.href}
+                    className={`flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3 transition hover:border-slate-500 ${TONE_STYLES[item.tone]}`}
+                  >
+                    <div className="flex min-w-0 flex-1 items-start gap-3">
+                      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${TONE_DOT[item.tone]}`} aria-hidden />
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-100">{item.title}</p>
+                        {item.detail ? (
+                          <p className="mt-0.5 line-clamp-2 text-xs text-slate-400">{item.detail}</p>
+                        ) : null}
+                      </div>
+                    </div>
+                    <span className="shrink-0 text-xs font-semibold text-slate-200">{item.cta} →</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
     </div>
   );
 }

@@ -56,6 +56,9 @@ export default function LandlordOnboardingFlow() {
   const [payoutDetails, setPayoutDetails] = useState("");
   const [propertyTitle, setPropertyTitle] = useState("");
   const [propertyAddress, setPropertyAddress] = useState("");
+  // Set when the landlord already created a property (e.g. resubmitting after a rejection),
+  // so the last step does not insert a duplicate.
+  const [hasExistingProperty, setHasExistingProperty] = useState(false);
 
   const stepMeta = useMemo(
     () => steps.find((item) => item.id === step) ?? steps[0],
@@ -140,7 +143,7 @@ export default function LandlordOnboardingFlow() {
         supabase
           .from("properties")
           .select("title, address, status, created_at")
-          .eq("owner_id", user.id)
+          .or(`owner_id.eq.${user.id},landlord_id.eq.${user.id}`)
           .order("created_at", { ascending: false })
           .limit(1)
           .maybeSingle(),
@@ -185,7 +188,13 @@ export default function LandlordOnboardingFlow() {
 
           setPayoutDetails(detailsValue);
         }
-        if (landlordProfile.onboarding_step) {
+        if (
+          landlordProfile.verification_status === "rejected" &&
+          (landlordProfile.onboarding_step ?? 1) > 2
+        ) {
+          // Rejected after finishing: reopen verification so they can fix and resubmit.
+          setStep(2);
+        } else if (landlordProfile.onboarding_step) {
           setStep(landlordProfile.onboarding_step);
         }
       }
@@ -203,6 +212,7 @@ export default function LandlordOnboardingFlow() {
       if (property) {
         setPropertyTitle(property.title ?? "");
         setPropertyAddress(property.address ?? "");
+        setHasExistingProperty(true);
       }
 
       setLoading(false);
@@ -319,24 +329,18 @@ export default function LandlordOnboardingFlow() {
       return;
     }
 
+    if (uploadedDocs.length === 0) {
+      setStatus("Upload at least one ownership document before continuing.");
+      return;
+    }
+
     setIsSaving(true);
     setStatus(null);
 
     try {
-      const updated = await updateLandlordProfile(
-        {
-          ownership_type: ownershipType,
-          verification_status: "pending",
-          // Resubmitting after a rejection clears the previous reason.
-          rejection_reason: null,
-        },
-        3
-      );
-
-      if (updated) {
-        setVerificationStatus("pending");
-        setRejectionReason(null);
-      }
+      // Only save the ownership details here; the application is submitted for
+      // review on the final step, once every step is complete.
+      await updateLandlordProfile({ ownership_type: ownershipType }, 3);
     } finally {
       setIsSaving(false);
     }
@@ -368,19 +372,35 @@ export default function LandlordOnboardingFlow() {
     setStatus(null);
 
     try {
-      const { error } = await supabase.from("properties").insert({
-        owner_id: userId,
-        title: propertyTitle,
-        address: propertyAddress,
-        status: "draft",
-      });
+      if (!hasExistingProperty) {
+        const { error } = await supabase.from("properties").insert({
+          owner_id: userId,
+          landlord_id: userId,
+          title: propertyTitle,
+          address: propertyAddress,
+          status: "draft",
+        });
 
-      if (error) {
-        setStatus(error.message);
-        return;
+        if (error) {
+          setStatus(error.message);
+          return;
+        }
+
+        setHasExistingProperty(true);
       }
 
-      await updateLandlordProfile({}, 5);
+      // Submit (or resubmit) the application for admin review now that every step is done.
+      const submitted = await updateLandlordProfile(
+        canEditVerification
+          ? { verification_status: "pending", rejection_reason: null }
+          : {},
+        5
+      );
+
+      if (submitted && canEditVerification) {
+        setVerificationStatus("pending");
+        setRejectionReason(null);
+      }
     } finally {
       setIsSaving(false);
     }
@@ -398,11 +418,12 @@ export default function LandlordOnboardingFlow() {
     return (
       <section className="rounded-3xl border border-slate-900 bg-slate-900/50 p-8">
         <h2 className="text-2xl font-semibold text-white">
-          You are ready to go
+          {verificationStatus === "approved" ? "You are verified" : "Submitted for review"}
         </h2>
         <p className="mt-2 text-sm text-slate-300">
-          Your onboarding is complete. We will review your ownership documents
-          and notify you as soon as verification is approved.
+          {verificationStatus === "approved"
+            ? "Your onboarding is complete and your account is verified."
+            : "Your onboarding is complete. We will review your ownership documents and notify you as soon as verification is approved."}
         </p>
         <button
           type="button"
@@ -621,7 +642,9 @@ export default function LandlordOnboardingFlow() {
 
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-xs text-slate-400">
-              Verification will remain pending until reviewed by an admin.
+              {uploadedDocs.length === 0
+                ? "Upload at least one document to continue."
+                : "You will submit everything for review on the last step."}
             </p>
             <div className="flex gap-3">
               <button
@@ -634,7 +657,7 @@ export default function LandlordOnboardingFlow() {
               <button
                 type="button"
                 onClick={handleOwnershipContinue}
-                disabled={isSaving || !canEditVerification}
+                disabled={isSaving || !canEditVerification || uploadedDocs.length === 0}
                 className="rounded-2xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-70"
               >
                 {isSaving ? "Saving..." : "Continue"}
@@ -707,7 +730,7 @@ export default function LandlordOnboardingFlow() {
             <input
               value={propertyTitle}
               onChange={(event) => setPropertyTitle(event.target.value)}
-              disabled={!canEditVerification}
+              disabled={!canEditVerification || hasExistingProperty}
               className="rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3 text-slate-100 outline-none ring-slate-600 focus:ring"
               placeholder="Riverstone Apartments"
             />
@@ -717,14 +740,16 @@ export default function LandlordOnboardingFlow() {
             <input
               value={propertyAddress}
               onChange={(event) => setPropertyAddress(event.target.value)}
-              disabled={!canEditVerification}
+              disabled={!canEditVerification || hasExistingProperty}
               className="rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3 text-slate-100 outline-none ring-slate-600 focus:ring"
               placeholder="123 Main St, Austin, TX"
             />
           </label>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-xs text-slate-400">
-              This property will stay in draft until verification is approved.
+              {hasExistingProperty
+                ? "Your first property is already saved. Edit it any time from Listings."
+                : "This property will stay in draft until verification is approved."}
             </p>
             {!canEditVerification ? (
               <p className="text-xs text-slate-500">
@@ -745,7 +770,11 @@ export default function LandlordOnboardingFlow() {
                 disabled={!propertyTitle || !propertyAddress || isSaving || !canEditVerification}
                 className="rounded-2xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-70"
               >
-                {isSaving ? "Saving..." : "Finish onboarding"}
+                {isSaving
+                  ? "Submitting..."
+                  : verificationStatus === "rejected"
+                    ? "Resubmit for review"
+                    : "Submit for review"}
               </button>
             </div>
           </div>
