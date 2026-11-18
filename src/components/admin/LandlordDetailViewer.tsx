@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { supabase } from "@/lib/supabase/client";
+import RejectDialog from "@/components/admin/RejectDialog";
 
 type LandlordDetail = {
   profile: {
@@ -15,8 +16,10 @@ type LandlordDetail = {
     ownership_type: string;
     verification_status: string;
     payout_method: string;
-    payout_details: any;
+    payout_details: { details?: string } | null;
     created_at: string;
+    rejection_reason: string | null;
+    reviewed_at: string | null;
   };
   documents: Array<{
     id: string;
@@ -31,16 +34,24 @@ type LandlordDetailViewerProps = {
 };
 
 export default function LandlordDetailViewer({ userId }: LandlordDetailViewerProps) {
-  const router = useRouter();
   const [detail, setDetail] = useState<LandlordDetail | null>(null);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState<string | null>(null);
+  const [status, setStatus] = useState<{ tone: "success" | "error"; text: string } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [rejectOpen, setRejectOpen] = useState(false);
+  // undefined = no decision made yet; null = no other pending applications.
+  const [nextPendingId, setNextPendingId] = useState<string | null | undefined>(undefined);
 
   useEffect(() => {
     let isActive = true;
 
     const loadDetail = async () => {
+      // Reset per-applicant state; "Review next" reuses this component with a new userId.
+      setLoading(true);
+      setStatus(null);
+      setRejectOpen(false);
+      setNextPendingId(undefined);
+
       const [profileRes, landlordRes, docsRes] = await Promise.all([
         supabase
           .from("profiles")
@@ -49,7 +60,7 @@ export default function LandlordDetailViewer({ userId }: LandlordDetailViewerPro
           .maybeSingle(),
         supabase
           .from("landlord_profiles")
-          .select("ownership_type, verification_status, payout_method, payout_details, created_at")
+          .select("ownership_type, verification_status, payout_method, payout_details, created_at, rejection_reason, reviewed_at")
           .eq("user_id", userId)
           .maybeSingle(),
         supabase
@@ -62,8 +73,13 @@ export default function LandlordDetailViewer({ userId }: LandlordDetailViewerPro
         return;
       }
 
-      if (profileRes.error || landlordRes.error || docsRes.error) {
-        setStatus("Failed to load landlord details");
+      const loadError = profileRes.error || landlordRes.error || docsRes.error;
+      if (loadError) {
+        console.error("Failed to load landlord details:", loadError);
+        setStatus({
+          tone: "error",
+          text: `Failed to load landlord details: ${loadError.message}`,
+        });
         setLoading(false);
         return;
       }
@@ -76,6 +92,8 @@ export default function LandlordDetailViewer({ userId }: LandlordDetailViewerPro
           payout_method: "",
           payout_details: null,
           created_at: "",
+          rejection_reason: null,
+          reviewed_at: null,
         },
         documents: docsRes.data || [],
       });
@@ -89,47 +107,63 @@ export default function LandlordDetailViewer({ userId }: LandlordDetailViewerPro
     };
   }, [userId]);
 
-  const handleApprove = async () => {
+  const decide = async (decision: "approved" | "rejected", reason?: string) => {
     setIsSubmitting(true);
     setStatus(null);
 
     try {
-      const { error } = await supabase.from("landlord_profiles").update({
-        verification_status: "approved",
-      }).eq("user_id", userId);
+      const { data: authData } = await supabase.auth.getUser();
+      const reviewedAt = new Date().toISOString();
+      const rejectionReason = decision === "rejected" ? reason ?? null : null;
+
+      const { error } = await supabase
+        .from("landlord_profiles")
+        .update({
+          verification_status: decision,
+          rejection_reason: rejectionReason,
+          reviewed_at: reviewedAt,
+          reviewed_by: authData.user?.id ?? null,
+        })
+        .eq("user_id", userId);
 
       if (error) {
-        setStatus(error.message);
+        setStatus({ tone: "error", text: error.message });
         return;
       }
 
-      setStatus("Landlord approved successfully");
-      setTimeout(() => {
-        router.push("/dashboards/admin/landlords");
-      }, 1500);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
+      setDetail((prev) =>
+        prev
+          ? {
+              ...prev,
+              landlord: {
+                ...prev.landlord,
+                verification_status: decision,
+                rejection_reason: rejectionReason,
+                reviewed_at: reviewedAt,
+              },
+            }
+          : prev
+      );
+      setRejectOpen(false);
+      setStatus({
+        tone: "success",
+        text:
+          decision === "approved"
+            ? "Landlord approved."
+            : "Landlord rejected. They will see your reason.",
+      });
 
-  const handleReject = async () => {
-    setIsSubmitting(true);
-    setStatus(null);
+      // Oldest remaining pending application, so the admin can keep working the queue.
+      const { data: next } = await supabase
+        .from("landlord_profiles")
+        .select("user_id")
+        .eq("verification_status", "pending")
+        .neq("user_id", userId)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
 
-    try {
-      const { error } = await supabase.from("landlord_profiles").update({
-        verification_status: "rejected",
-      }).eq("user_id", userId);
-
-      if (error) {
-        setStatus(error.message);
-        return;
-      }
-
-      setStatus("Landlord rejected");
-      setTimeout(() => {
-        router.push("/dashboards/admin/landlords");
-      }, 1500);
+      setNextPendingId(next?.user_id ?? null);
     } finally {
       setIsSubmitting(false);
     }
@@ -145,8 +179,16 @@ export default function LandlordDetailViewer({ userId }: LandlordDetailViewerPro
 
   if (!detail) {
     return (
-      <div className="rounded-3xl border border-slate-900 bg-slate-900/50 p-8 text-center">
-        <p className="text-sm text-slate-300">Landlord not found.</p>
+      <div
+        className={`rounded-3xl border p-8 text-center ${
+          status?.tone === "error"
+            ? "border-rose-900/60 bg-rose-950/30"
+            : "border-slate-900 bg-slate-900/50"
+        }`}
+      >
+        <p className={`text-sm ${status?.tone === "error" ? "text-rose-200" : "text-slate-300"}`}>
+          {status?.tone === "error" ? status.text : "Landlord not found."}
+        </p>
       </div>
     );
   }
@@ -179,12 +221,42 @@ export default function LandlordDetailViewer({ userId }: LandlordDetailViewerPro
       </header>
 
       {status ? (
-        <div className={`rounded-2xl px-4 py-3 text-sm ${
-          status.includes("successfully") || status.includes("rejected")
-            ? "border border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
-            : "border border-rose-500/40 bg-rose-500/10 text-rose-100"
-        }`}>
-          {status}
+        <div
+          role="status"
+          className={`flex flex-wrap items-center justify-between gap-3 rounded-2xl px-4 py-3 text-sm ${
+            status.tone === "success"
+              ? "border border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
+              : "border border-rose-500/40 bg-rose-500/10 text-rose-100"
+          }`}
+        >
+          <span>{status.text}</span>
+          {status.tone === "success" && nextPendingId !== undefined ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Link
+                href="/dashboards/admin/landlords?status=pending"
+                className="rounded-xl border border-emerald-500/40 px-3 py-1.5 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-500/10"
+              >
+                Back to pending
+              </Link>
+              {nextPendingId ? (
+                <Link
+                  href={`/dashboards/admin/landlords/${nextPendingId}`}
+                  className="rounded-xl bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400"
+                >
+                  Review next pending →
+                </Link>
+              ) : (
+                <span className="text-xs text-emerald-200/80">Queue clear</span>
+              )}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {detail.landlord.verification_status === "rejected" && detail.landlord.rejection_reason ? (
+        <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+          <p className="text-xs uppercase tracking-[0.2em] text-rose-300">Rejection reason</p>
+          <p className="mt-1 whitespace-pre-line">{detail.landlord.rejection_reason}</p>
         </div>
       ) : null}
 
@@ -316,26 +388,40 @@ export default function LandlordDetailViewer({ userId }: LandlordDetailViewerPro
         <div className="flex flex-wrap gap-3">
           <button
             type="button"
-            onClick={handleApprove}
+            onClick={() => decide("approved")}
             disabled={isSubmitting}
             className="rounded-2xl bg-emerald-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70"
           >
-            {isSubmitting ? "Approving..." : "Approve Landlord"}
+            {isSubmitting && !rejectOpen ? "Approving..." : "Approve Landlord"}
           </button>
           <button
             type="button"
-            onClick={handleReject}
+            onClick={() => setRejectOpen(true)}
             disabled={isSubmitting}
             className="rounded-2xl border border-rose-600 px-6 py-3 text-sm font-semibold text-rose-300 transition hover:bg-rose-600/10 disabled:cursor-not-allowed disabled:opacity-70"
           >
-            {isSubmitting ? "Rejecting..." : "Reject"}
+            Reject
           </button>
         </div>
       ) : (
         <div className="rounded-2xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-sm text-slate-300">
-          This landlord has already been {detail.landlord.verification_status}.
+          {detail.landlord.verification_status === "not_started"
+            ? "This landlord has not submitted an application yet."
+            : `This landlord has been ${detail.landlord.verification_status}${
+                detail.landlord.reviewed_at
+                  ? ` on ${new Date(detail.landlord.reviewed_at).toLocaleDateString()}`
+                  : ""
+              }.`}
         </div>
       )}
+
+      <RejectDialog
+        open={rejectOpen}
+        subject={detail.profile.full_name || "this landlord"}
+        submitting={isSubmitting}
+        onCancel={() => setRejectOpen(false)}
+        onConfirm={(reason) => decide("rejected", reason)}
+      />
     </section>
   );
 }

@@ -29,6 +29,8 @@ export default function LandlordDashboardPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [isVerified, setIsVerified] = useState(false);
+  const [verificationStatus, setVerificationStatus] = useState<string | null>(null);
+  const [rejectionReason, setRejectionReason] = useState<string | null>(null);
   const [properties, setProperties] = useState<PropertyRow[]>([]);
   const [tenancies, setTenancies] = useState<TenancyRow[]>([]);
   const [invitations, setInvitations] = useState<InvitationRow[]>([]);
@@ -52,7 +54,7 @@ export default function LandlordDashboardPage() {
 
       const { data: landlordProfile } = await supabase
         .from("landlord_profiles")
-        .select("onboarding_step, verification_status")
+        .select("onboarding_step, verification_status, rejection_reason")
         .eq("user_id", user.id)
         .maybeSingle();
 
@@ -66,6 +68,8 @@ export default function LandlordDashboardPage() {
       }
 
       setIsVerified(landlordProfile.verification_status === "approved");
+      setVerificationStatus(landlordProfile.verification_status ?? null);
+      setRejectionReason(landlordProfile.rejection_reason ?? null);
 
       const [propertiesResult, tenanciesResult, invitationsResult] =
         await Promise.all([
@@ -329,12 +333,46 @@ export default function LandlordDashboardPage() {
             >
               Maintenance queue
             </Link>
-            <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 px-5 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-emerald-100">
-              {isVerified ? "Verified" : "Verification pending"}
+            <div
+              className={`rounded-2xl border px-5 py-3 text-xs font-semibold uppercase tracking-[0.3em] ${
+                isVerified
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
+                  : verificationStatus === "rejected"
+                    ? "border-rose-500/40 bg-rose-500/10 text-rose-100"
+                    : "border-amber-500/40 bg-amber-500/10 text-amber-100"
+              }`}
+            >
+              {isVerified
+                ? "Verified"
+                : verificationStatus === "rejected"
+                  ? "Changes requested"
+                  : "Verification pending"}
             </div>
           </div>
         </div>
       </section>
+
+      {verificationStatus === "rejected" ? (
+        <section className="flex flex-wrap items-start justify-between gap-4 rounded-3xl border border-rose-500/40 bg-rose-500/10 p-6">
+          <div className="max-w-2xl">
+            <h3 className="text-base font-semibold text-rose-100">
+              Your verification was not approved
+            </h3>
+            {rejectionReason ? (
+              <p className="mt-2 whitespace-pre-line text-sm text-rose-100/90">{rejectionReason}</p>
+            ) : null}
+            <p className="mt-2 text-xs text-rose-200/80">
+              Fix the issue in your onboarding details and resubmit for review.
+            </p>
+          </div>
+          <Link
+            href="/dashboards/landlord/onboarding"
+            className="rounded-2xl bg-rose-500 px-5 py-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-950 transition hover:bg-rose-400"
+          >
+            Update &amp; resubmit
+          </Link>
+        </section>
+      ) : null}
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         {[

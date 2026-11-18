@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
+import { firstEmbedded } from "@/lib/supabase/embedded";
 
 type LandlordListing = {
   user_id: string;
@@ -14,15 +16,41 @@ type LandlordListing = {
   created_at: string;
 };
 
+const FILTERS = ["all", "pending", "approved", "rejected"] as const;
+type Filter = (typeof FILTERS)[number];
+
+function parseFilter(value: string | null): Filter {
+  return (FILTERS as readonly string[]).includes(value ?? "") ? (value as Filter) : "all";
+}
+
 export default function LandlordsList() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const filter = parseFilter(searchParams.get("status"));
+
   const [landlords, setLandlords] = useState<LandlordListing[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<"all" | "pending" | "approved" | "rejected">("all");
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const setFilter = (next: Filter) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "all") {
+      params.delete("status");
+    } else {
+      params.set("status", next);
+    }
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  };
 
   useEffect(() => {
     let isActive = true;
 
     const loadLandlords = async () => {
+      setLoading(true);
+      setLoadError(null);
+
       let query = supabase
         .from("landlord_profiles")
         .select(
@@ -32,7 +60,7 @@ export default function LandlordsList() {
           ownership_type,
           onboarding_step,
           created_at,
-          profiles(full_name)
+          profiles(full_name, email)
         `
         )
         .order("created_at", { ascending: false });
@@ -47,29 +75,23 @@ export default function LandlordsList() {
         return;
       }
 
-      console.log("Admin landlords query:", { data, error, filter });
-
       if (error) {
         console.error("Failed to load landlords:", error);
+        setLoadError("Could not load landlords. Please try again.");
+        setLandlords([]);
+        setLoading(false);
         return;
       }
 
-      // For each landlord, fetch their email from auth
-      const formatted = await Promise.all(
-        (data || []).map(async (record: any) => {
-          // Email will not be directly available through API calls
-          // For now, we'll show user_id or fetch through an API route
-          return {
-            user_id: record.user_id,
-            email: "user@example.com", // This will need to be fetched via API route
-            full_name: record.profiles?.full_name || "Not set",
-            verification_status: record.verification_status,
-            ownership_type: record.ownership_type || "Not set",
-            onboarding_step: record.onboarding_step,
-            created_at: record.created_at,
-          };
-        })
-      );
+      const formatted: LandlordListing[] = (data || []).map((record) => ({
+        user_id: record.user_id,
+        email: firstEmbedded(record.profiles)?.email || "Not set",
+        full_name: firstEmbedded(record.profiles)?.full_name || "Not set",
+        verification_status: record.verification_status,
+        ownership_type: record.ownership_type || "Not set",
+        onboarding_step: record.onboarding_step,
+        created_at: record.created_at,
+      }));
 
       setLandlords(formatted);
       setLoading(false);
@@ -94,7 +116,7 @@ export default function LandlordsList() {
       </header>
 
       <div className="flex flex-wrap gap-2">
-        {(["all", "pending", "approved", "rejected"] as const).map((status) => (
+        {FILTERS.map((status) => (
           <button
             key={status}
             onClick={() => setFilter(status)}
@@ -118,6 +140,10 @@ export default function LandlordsList() {
       {loading ? (
         <div className="flex min-h-[40vh] items-center justify-center text-sm text-slate-300">
           Loading landlords...
+        </div>
+      ) : loadError ? (
+        <div className="rounded-3xl border border-rose-900/60 bg-rose-950/30 p-8 text-center">
+          <p className="text-sm text-rose-200">{loadError}</p>
         </div>
       ) : landlords.length === 0 ? (
         <div className="rounded-3xl border border-slate-900 bg-slate-900/50 p-8 text-center">

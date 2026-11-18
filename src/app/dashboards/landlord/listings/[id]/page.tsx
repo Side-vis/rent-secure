@@ -33,6 +33,7 @@ type PropertySummary = {
   lease_duration_months: number | null;
   available_from: string | null;
   security_deposit: number | null;
+  rejection_reason: string | null;
 };
 
 type ListingTab = "details" | "units";
@@ -56,7 +57,7 @@ function ListingEditorContent({ propertyId }: { propertyId: string }) {
     const { data, error } = await supabase
       .from("properties")
       .select(
-        "id, title, description, address, city, country, status, property_type, monthly_rent, currency, bedrooms, bathrooms, max_occupancy, furnished, parking, pet_policy, lease_duration_months, available_from, security_deposit"
+        "id, title, description, address, city, country, status, property_type, monthly_rent, currency, bedrooms, bathrooms, max_occupancy, furnished, parking, pet_policy, lease_duration_months, available_from, security_deposit, rejection_reason"
       )
       .eq("id", propertyId)
       .or(`owner_id.eq.${user.id},landlord_id.eq.${user.id}`)
@@ -89,7 +90,7 @@ function ListingEditorContent({ propertyId }: { propertyId: string }) {
       const { data, error } = await supabase
         .from("properties")
         .select(
-          "id, title, description, address, city, country, status, property_type, monthly_rent, currency, bedrooms, bathrooms, max_occupancy, furnished, parking, pet_policy, lease_duration_months, available_from, security_deposit"
+          "id, title, description, address, city, country, status, property_type, monthly_rent, currency, bedrooms, bathrooms, max_occupancy, furnished, parking, pet_policy, lease_duration_months, available_from, security_deposit, rejection_reason"
         )
         .eq("id", propertyId)
         .or(`owner_id.eq.${user.id},landlord_id.eq.${user.id}`)
@@ -202,6 +203,18 @@ function ListingEditorContent({ propertyId }: { propertyId: string }) {
         </button>
       </div>
 
+      {property.status === "rejected" ? (
+        <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+          <p className="font-semibold">This listing was not approved</p>
+          {property.rejection_reason ? (
+            <p className="mt-1 whitespace-pre-line text-rose-100/90">{property.rejection_reason}</p>
+          ) : null}
+          <p className="mt-2 text-xs text-rose-200/80">
+            Edit the listing to fix the issue, then submit it for verification again.
+          </p>
+        </div>
+      ) : null}
+
       {activeTab === "details" ? (
         <>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -212,7 +225,9 @@ function ListingEditorContent({ propertyId }: { propertyId: string }) {
               <p className="mt-2 text-lg font-semibold capitalize text-white">
                 {property.status === "pending_verification"
                   ? "Pending verification"
-                  : property.status}
+                  : property.status === "rejected"
+                    ? "Changes requested"
+                    : property.status}
               </p>
             </div>
             <div className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">

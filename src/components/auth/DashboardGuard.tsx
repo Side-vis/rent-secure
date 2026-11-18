@@ -42,16 +42,29 @@ export default function DashboardGuard({ children }: DashboardGuardProps) {
         return;
       }
 
-      let role = user.user_metadata?.role as Role | undefined;
+      // profiles.role is the source of truth (it is what RLS checks via is_admin()).
+      // user_metadata is editable by the user, so it is only a fallback for
+      // non-admin roles while a profile row has not been created yet.
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", user.id)
+        .maybeSingle();
 
-      if (!role) {
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("role")
-          .eq("id", user.id)
-          .maybeSingle();
+      if (!isActive) {
+        return;
+      }
 
-        role = (profile?.role as Role | undefined) ?? role;
+      const profileRole = isRole(profile?.role) ? profile.role : undefined;
+      const metadataRole = isRole(user.user_metadata?.role)
+        ? (user.user_metadata.role as Role)
+        : undefined;
+      const role: Role | undefined =
+        profileRole ?? (metadataRole === "admin" ? undefined : metadataRole);
+
+      if (requestedRole === "admin" && role !== "admin") {
+        router.replace(getDashboardRoute(role));
+        return;
       }
 
       if (requestedRole && role && requestedRole !== role) {

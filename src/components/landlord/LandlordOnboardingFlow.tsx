@@ -49,6 +49,7 @@ export default function LandlordOnboardingFlow() {
   const [location, setLocation] = useState("");
   const [ownershipType, setOwnershipType] = useState<OwnershipType>("owner");
   const [verificationStatus, setVerificationStatus] = useState("not_started");
+  const [rejectionReason, setRejectionReason] = useState<string | null>(null);
   const [selectedDocs, setSelectedDocs] = useState<File[]>([]);
   const [uploadedDocs, setUploadedDocs] = useState<UploadedDoc[]>([]);
   const [payoutMethod, setPayoutMethod] = useState("bank");
@@ -100,11 +101,15 @@ export default function LandlordOnboardingFlow() {
           role: "landlord",
           email: userEmail,
         }),
-        supabase.from("landlord_profiles").upsert({
-          user_id: user.id,
-          verification_status: "not_started",
-          onboarding_step: 1,
-        }),
+        // Create the row only if missing; never reset an existing review status or progress.
+        supabase.from("landlord_profiles").upsert(
+          {
+            user_id: user.id,
+            verification_status: "not_started",
+            onboarding_step: 1,
+          },
+          { onConflict: "user_id", ignoreDuplicates: true }
+        ),
       ]);
 
       if (profileCreateResult.error || landlordCreateResult.error) {
@@ -123,7 +128,7 @@ export default function LandlordOnboardingFlow() {
         supabase
           .from("landlord_profiles")
           .select(
-            "ownership_type, verification_status, payout_method, payout_details, onboarding_step"
+            "ownership_type, verification_status, payout_method, payout_details, onboarding_step, rejection_reason"
           )
           .eq("user_id", user.id)
           .maybeSingle(),
@@ -158,6 +163,7 @@ export default function LandlordOnboardingFlow() {
         setVerificationStatus(
           landlordProfile.verification_status ?? "not_started"
         );
+        setRejectionReason(landlordProfile.rejection_reason ?? null);
         setPayoutMethod(landlordProfile.payout_method ?? "bank");
         if (landlordProfile.payout_details) {
           let detailsValue = "";
@@ -321,12 +327,15 @@ export default function LandlordOnboardingFlow() {
         {
           ownership_type: ownershipType,
           verification_status: "pending",
+          // Resubmitting after a rejection clears the previous reason.
+          rejection_reason: null,
         },
         3
       );
 
       if (updated) {
         setVerificationStatus("pending");
+        setRejectionReason(null);
       }
     } finally {
       setIsSaving(false);
@@ -430,10 +439,23 @@ export default function LandlordOnboardingFlow() {
                 ? "Approved"
                 : verificationStatus === "pending"
                   ? "Pending review"
-                  : "Not started"}
+                  : verificationStatus === "rejected"
+                    ? "Changes requested"
+                    : "Not started"}
             </p>
           </div>
         </div>
+        {verificationStatus === "rejected" ? (
+          <div className="mt-5 rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+            <p className="font-semibold">Your verification needs changes</p>
+            {rejectionReason ? (
+              <p className="mt-1 whitespace-pre-line text-rose-100/90">{rejectionReason}</p>
+            ) : null}
+            <p className="mt-2 text-xs text-rose-200/80">
+              Update your details or documents below and submit again for review.
+            </p>
+          </div>
+        ) : null}
         <div className="mt-6">
           <div className="flex justify-between text-xs text-slate-400">
             <span>Progress</span>

@@ -223,7 +223,8 @@ export default function ListingWizard({
     try {
       const { error: updateError } = await supabase
         .from("properties")
-        .update({ status: "pending_verification" })
+        // Resubmitting after a rejection clears the previous reason.
+        .update({ status: "pending_verification", rejection_reason: null })
         .eq("id", draft.id)
         .eq("owner_id", userId);
 

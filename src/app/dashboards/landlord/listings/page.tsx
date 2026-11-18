@@ -90,6 +90,8 @@ export default function LandlordListingsPage() {
         return "border-yellow-600 text-yellow-300";
       case "active":
         return "border-emerald-600 text-emerald-300";
+      case "rejected":
+        return "border-rose-600 text-rose-300";
       case "paused":
         return "border-orange-600 text-orange-300";
       case "archived":
